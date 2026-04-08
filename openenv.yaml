@@ -1,0 +1,60 @@
+name: GuardianNet - Collective Alignment Engine
+version: 1.0.0
+description: >
+  RL environment for real-time content moderation in group chats.
+  Agents learn to balance safety, group health, and user experience
+  across three difficulty levels: basic, context-aware, adversarial.
+author: GuardianNet Team
+license: MIT
+tags: [openenv, rl, safety, moderation, nlp, multi-agent]
+
+environment:
+  class: cae_env.environment.OmniAlignEnv
+  entry_point: cae_env
+  kwargs:
+    num_users: 5
+    max_steps: 30
+
+tasks:
+  - id: basic_moderation
+    name: Basic Harm Detection
+    description: Classify obvious harmful content (hate speech, threats, spam)
+    difficulty: easy
+    grader: tasks.graders.grade_basic
+    success_threshold: 0.8
+
+  - id: context_aware
+    name: Context-Aware Decision Making
+    description: Consider sender history and community context
+    difficulty: medium
+    grader: tasks.graders.grade_context
+    success_threshold: 0.8
+
+  - id: adversarial_highstakes
+    name: Adversarial & High-Stakes
+    description: Handle sophisticated evasion, coded language, and edge cases
+    difficulty: hard
+    grader: tasks.graders.grade_adversarial
+    success_threshold: 0.8
+
+inference_script: inference.py
+dockerfile: Dockerfile
+
+observation_space:
+  type: Box
+  description: >
+    Flat vector: message embedding (128) + user profiles (num_users)
+    + conversation history (5×128) + group state (4) + action history (15)
+    + harm probabilities (11) + trust scores (3) + urgency flags (5)
+
+action_space:
+  type: Discrete
+  n: 3
+  actions: [allow, flag, delete]
+
+rewards:
+  correct_allow:  +1.0
+  correct_flag:   +0.5
+  correct_delete: +1.0
+  false_positive: -2.0
+  missed_harm:    -2.0

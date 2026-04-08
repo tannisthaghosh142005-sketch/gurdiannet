@@ -1,0 +1,47 @@
+﻿python : Traceback 
+(most recent call 
+last):
+At line:1 char:1
++ python inference.py 
+2>&1 | Out-File 
+-FilePath 
+traceback.txt 
+-Encoding ...
++ ~~~~~~~~~~~~~~~~~~~~
+~~~~
+    + CategoryInfo    
+          : 
+NotSpecified: (T    
+raceback (most recent 
+    call 
+last)::String)     
+[], RemoteException
+    + 
+FullyQualifiedError   
+ Id : 
+NativeCommandErr    or
+ 
+  File "C:\Users\HP\On
+eDrive\Desktop\cae_env
+\inference.py", line 
+24, in <module>
+    from 
+cae_env.environment 
+import OmniAlignEnv
+  File "C:\Users\HP\On
+eDrive\Desktop\cae_env
+\cae_env\__init__.py",
+ line 3, in <module>
+    from 
+cae_env.types import 
+Observation, 
+MediaType, Language, 
+HarmCategory, 
+ActionType
+ImportError: cannot 
+import name 
+'Observation' from 
+'cae_env.types' (C:\Us
+ers\HP\OneDrive\Deskto
+p\cae_env\cae_env\type
+s.py)
