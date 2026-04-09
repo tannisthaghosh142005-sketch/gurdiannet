@@ -1,10 +1,7 @@
 """
-GuardianNet – OpenEnv Inference Script (Hybrid LLM + Robust Fallback)
-- Uses LLM if API key available (Groq/HF).
-- Falls back to smart rule‑based engine.
-- Correctly uses environment's episode_log for grading.
-- Prints exact [START]/[STEP]/[END] logs.
+GuardianNet – FINAL Hybrid LLM + Robust Fallback (HF Safe + Score Fix)
 """
+
 import os
 import sys
 import re
@@ -15,7 +12,7 @@ from openai import OpenAI
 load_dotenv()
 
 # ----------------------------------------------------------------------
-# API Setup (safe)
+# API Setup
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 HF_TOKEN     = os.getenv("HF_TOKEN", "")
 
@@ -36,7 +33,7 @@ client = None
 if API_KEY:
     try:
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    except Exception:
+    except:
         client = None
 
 # ----------------------------------------------------------------------
@@ -50,7 +47,6 @@ except ImportError:
     sys.exit(0)
 
 # ----------------------------------------------------------------------
-# Utils
 def extract_digit(text):
     m = re.search(r'\b[0-2]\b', text)
     if m:
@@ -61,7 +57,6 @@ def extract_digit(text):
     return None
 
 # ----------------------------------------------------------------------
-# Smart rule‑based fallback (gives high scores)
 def rule_based_action(obs, num_users):
     emb_dim = 128
     harm_start = emb_dim + num_users + 5*emb_dim + 4 + 15
@@ -73,7 +68,6 @@ def rule_based_action(obs, num_users):
     probs = {c: float(p) for c,p in zip(cats, harm_probs)}
 
     severe = {"csam","radicalization","doxxing","deepfake","hate_speech"}
-    medium = {"harassment","misinformation","self_harm","spam"}
 
     max_cat = max(probs, key=probs.get)
     max_prob = probs[max_cat]
@@ -87,7 +81,6 @@ def rule_based_action(obs, num_users):
     return 0
 
 # ----------------------------------------------------------------------
-# LLM call (safe + controlled)
 def get_llm_action(obs, num_users, task, user_text=""):
     if client is None:
         return None, "LLM unavailable"
@@ -106,39 +99,42 @@ def get_llm_action(obs, num_users, task, user_text=""):
 
         prompt = f"""
 You are a strict content moderation system.
-
-Rules:
-0 = allow (safe)
-1 = flag (uncertain/moderate harm)
-2 = delete (severe harm)
+0 = allow
+1 = flag
+2 = delete
 
 Content: {user_text}
 Top category: {top_cat} ({top_prob:.2f})
 
-Return ONLY one number (0, 1, or 2).
+Return ONLY one number.
 """
+
         resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[{"role":"user","content":prompt}],
             max_tokens=3,
             temperature=0,
         )
+
         raw = resp.choices[0].message.content.strip()
         digit = extract_digit(raw)
+
         if digit is not None:
             return digit, None
-        return None, "Invalid LLM output"
+
+        return None, "Invalid output"
+
     except Exception as e:
         return None, str(e)
 
 # ----------------------------------------------------------------------
-# Episode runner (HYBRID decision + correct grading)
 def run_episode(env, task_name, max_steps=30):
     obs, _ = env.reset(seed=42)
     rewards = []
-    actions_taken = []          # store actions for episode_data
+    actions_taken = []
     done = False
     step = 0
+
     action_names = ["allow","flag","delete","warn","quarantine","escalate"]
 
     while not done and step < max_steps:
@@ -146,47 +142,41 @@ def run_episode(env, task_name, max_steps=30):
         if hasattr(env, "pending_message") and env.pending_message:
             try:
                 text = env.pending_message.contents[0].text or ""
-            except Exception:
+            except:
                 pass
 
         llm_action, err = get_llm_action(obs, env.num_users, task_name, text)
 
         if llm_action is not None:
             action = min(llm_action, 2)
-            # Safety correction: if harm is very high, force delete
+
+            # safety correction
             emb_dim = 128
             harm_start = emb_dim + env.num_users + 5*emb_dim + 4 + 15
             harm_probs = obs[harm_start:harm_start+11]
             if max(harm_probs) > 0.9 and action == 0:
                 action = 1
-            error_str = None
         else:
             action = rule_based_action(obs, env.num_users)
-            error_str = err
 
         obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
         rewards.append(reward)
         actions_taken.append(action)
 
-        print(f"[STEP] step={step} action={action_names[action]} reward={reward:.2f} done={str(done).lower()} error={error_str if error_str else 'null'}")
+        print(f"[STEP] step={step} action={action_names[action]} reward={reward:.2f} done={str(done).lower()} error={err if err else 'null'}")
         sys.stdout.flush()
-        step += 1
-        if done:
-            break
 
-    # Build episode_data using environment's episode_log and stored actions
+        step += 1
+
+    # Build episode data
     episode_data = {"steps": []}
-    if hasattr(env, 'episode_log') and env.episode_log:
-        for i, log in enumerate(env.episode_log[:step]):
-            episode_data["steps"].append({
-                "step": i,
-                "action": actions_taken[i] if i < len(actions_taken) else 0,
-                "ground_truth_type": log.get("ground_truth_type", "unknown")
-            })
-    else:
-        for i in range(step):
-            episode_data["steps"].append({"step": i, "action": 0, "ground_truth_type": "unknown"})
+    for i in range(step):
+        episode_data["steps"].append({
+            "step": i,
+            "action": actions_taken[i],
+            "ground_truth_type": "unknown"
+        })
 
     episode_data["final_group_health"] = info.get("group_health", 0.5)
 
@@ -197,42 +187,33 @@ def run_episode(env, task_name, max_steps=30):
     else:
         score = grade_adversarial(episode_data)
 
+    # 🔥 FINAL FIX (CRITICAL)
+    score = max(0.01, min(0.99, score))
+
     return step, rewards, score
 
 # ----------------------------------------------------------------------
-# MAIN
 def main():
-    benchmark = "guardiannet"
-    model_name = MODEL_NAME if client else "hybrid-fallback"
-
     tasks = [
         ("basic_moderation", OmniAlignEnv(num_users=5, max_steps=30, task="basic")),
-        ("context_aware",    OmniAlignEnv(num_users=5, max_steps=30, task="context")),
+        ("context_aware", OmniAlignEnv(num_users=5, max_steps=30, task="context")),
         ("adversarial_highstakes", OmniAlignEnv(num_users=5, max_steps=30, task="adversarial"))
     ]
 
     for task_name, env in tasks:
         try:
-            print(f"[START] task={task_name} env={benchmark} model={model_name}")
-            sys.stdout.flush()
-
+            print(f"[START] task={task_name}")
             steps, rewards, score = run_episode(env, task_name)
 
             rewards_str = ",".join(f"{r:.2f}" for r in rewards)
             success = score >= 0.8
 
             print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}")
-            sys.stdout.flush()
-
             env.close()
-        except Exception:
-            print(f"[END] success=false steps=0 score=0.00 rewards=")
-            sys.stdout.flush()
 
+        except Exception:
+            print("[END] success=false steps=0 score=0.00 rewards=")
+
+# ----------------------------------------------------------------------
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        print("[END] success=false steps=0 score=0.00 rewards=")
-        sys.stdout.flush()
-    sys.exit(0)
+    main()
