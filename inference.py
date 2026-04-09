@@ -1,5 +1,5 @@
 """
-GuardianNet – FINAL Hybrid LLM + Robust Fallback (HF Safe + Score Fix)
+GuardianNet – FINAL PHASE 2 SURPASS VERSION
 """
 
 import os
@@ -57,6 +57,7 @@ def extract_digit(text):
     return None
 
 # ----------------------------------------------------------------------
+# 🔥 OPTIMIZED FALLBACK (KEY FIX)
 def rule_based_action(obs, num_users):
     emb_dim = 128
     harm_start = emb_dim + num_users + 5*emb_dim + 4 + 15
@@ -67,20 +68,26 @@ def rule_based_action(obs, num_users):
 
     probs = {c: float(p) for c,p in zip(cats, harm_probs)}
 
-    severe = {"csam","radicalization","doxxing","deepfake","hate_speech"}
-
+    severe = {"csam","radicalization","doxxing"}
     max_cat = max(probs, key=probs.get)
     max_prob = probs[max_cat]
 
-    if max_prob > 0.9:
-        return 2 if max_cat in severe else 1
+    # 🚨 DELETE only extreme
+    if max_prob > 0.95 and max_cat in severe:
+        return 2
+
+    # ⚖️ FLAG most harmful (NOT delete)
     if max_prob > 0.7:
         return 1
+
+    # 🤔 ambiguous
     if probs["ambiguous"] > 0.6:
         return 1
+
     return 0
 
 # ----------------------------------------------------------------------
+# 🔥 LLM DECISION (SAFE)
 def get_llm_action(obs, num_users, task, user_text=""):
     if client is None:
         return None, "LLM unavailable"
@@ -98,15 +105,17 @@ def get_llm_action(obs, num_users, task, user_text=""):
         top_prob = probs[top_cat]
 
         prompt = f"""
-You are a strict content moderation system.
+You are a moderation system.
 0 = allow
 1 = flag
 2 = delete
-
+Guidelines:
+- Delete ONLY extreme harmful content
+- Flag uncertain or moderate harm
+- Allow safe content
 Content: {user_text}
 Top category: {top_cat} ({top_prob:.2f})
-
-Return ONLY one number.
+Return ONLY 0, 1, or 2.
 """
 
         resp = client.chat.completions.create(
@@ -138,6 +147,7 @@ def run_episode(env, task_name, max_steps=30):
     action_names = ["allow","flag","delete","warn","quarantine","escalate"]
 
     while not done and step < max_steps:
+
         text = ""
         if hasattr(env, "pending_message") and env.pending_message:
             try:
@@ -150,16 +160,19 @@ def run_episode(env, task_name, max_steps=30):
         if llm_action is not None:
             action = min(llm_action, 2)
 
-            # safety correction
+            # 🔥 SOFT SAFETY (less aggressive)
             emb_dim = 128
             harm_start = emb_dim + env.num_users + 5*emb_dim + 4 + 15
             harm_probs = obs[harm_start:harm_start+11]
-            if max(harm_probs) > 0.9 and action == 0:
+
+            if max(harm_probs) > 0.95 and action == 0:
                 action = 1
+
         else:
             action = rule_based_action(obs, env.num_users)
 
         obs, reward, terminated, truncated, info = env.step(action)
+
         done = terminated or truncated
         rewards.append(reward)
         actions_taken.append(action)
@@ -169,17 +182,22 @@ def run_episode(env, task_name, max_steps=30):
 
         step += 1
 
-    # Build episode data
+    # ------------------------------------------------------------------
+    # Correct episode_data
     episode_data = {"steps": []}
-    for i in range(step):
-        episode_data["steps"].append({
-            "step": i,
-            "action": actions_taken[i],
-            "ground_truth_type": "unknown"
-        })
+
+    if hasattr(env, 'episode_log') and env.episode_log:
+        for i, log in enumerate(env.episode_log[:step]):
+            episode_data["steps"].append({
+                "step": i,
+                "action": actions_taken[i],
+                "ground_truth_type": log.get("ground_truth_type", "unknown")
+            })
 
     episode_data["final_group_health"] = info.get("group_health", 0.5)
 
+    # ------------------------------------------------------------------
+    # Scoring
     if task_name == "basic_moderation":
         score = grade_basic(episode_data)
     elif task_name == "context_aware":
@@ -187,7 +205,7 @@ def run_episode(env, task_name, max_steps=30):
     else:
         score = grade_adversarial(episode_data)
 
-    # 🔥 FINAL FIX (CRITICAL)
+    # 🔥 REQUIRED FIX
     score = max(0.01, min(0.99, score))
 
     return step, rewards, score
@@ -203,12 +221,14 @@ def main():
     for task_name, env in tasks:
         try:
             print(f"[START] task={task_name}")
+
             steps, rewards, score = run_episode(env, task_name)
 
             rewards_str = ",".join(f"{r:.2f}" for r in rewards)
             success = score >= 0.8
 
             print(f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}")
+
             env.close()
 
         except Exception:
